@@ -138,15 +138,16 @@ static void free_pcm_node(PCMNode* node) {
 // WASAPI Device Enumeration (COM-based)
 // ============================================================================
 
-// Internal: Get IMMDeviceEnumerator. Caller must Release() and CoUninitialize().
-static HRESULT get_enumerator(IMMDeviceEnumerator** ppEnum) {
+// Internal: Get IMMDeviceEnumerator. Caller must Release().
+static BOOL get_enumerator(IMMDeviceEnumerator** ppEnum, BOOL* pShouldUninit) {
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return hr;
+    *pShouldUninit = SUCCEEDED(hr);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return FALSE;
 
     hr = CoCreateInstance(
         &MY_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
         &MY_IID_IMMDeviceEnumerator, (void**)ppEnum);
-    return hr;
+    return SUCCEEDED(hr);
 }
 
 // Internal: count devices of given data flow
@@ -154,8 +155,9 @@ static int count_devices(EDataFlow flow) {
     IMMDeviceEnumerator* pEnum = NULL;
     IMMDeviceCollection* pColl = NULL;
     UINT count = 0;
+    BOOL shouldUninit = FALSE;
 
-    if (FAILED(get_enumerator(&pEnum))) return 0;
+    if (!get_enumerator(&pEnum, &shouldUninit)) return 0;
 
     HRESULT hr = pEnum->lpVtbl->EnumAudioEndpoints(pEnum, flow, DEVICE_STATE_ACTIVE, &pColl);
     if (SUCCEEDED(hr)) {
@@ -163,7 +165,7 @@ static int count_devices(EDataFlow flow) {
         pColl->lpVtbl->Release(pColl);
     }
     pEnum->lpVtbl->Release(pEnum);
-    CoUninitialize();
+    if (shouldUninit) CoUninitialize();
     return (int)count;
 }
 
@@ -174,9 +176,10 @@ static BOOL get_device_prop(EDataFlow flow, int index, const PROPERTYKEY* pkey, 
     IMMDevice* pDev = NULL;
     IPropertyStore* pProps = NULL;
     BOOL ok = FALSE;
+    BOOL shouldUninit = FALSE;
 
     buf[0] = '\0';
-    if (FAILED(get_enumerator(&pEnum))) return FALSE;
+    if (!get_enumerator(&pEnum, &shouldUninit)) return FALSE;
 
     HRESULT hr = pEnum->lpVtbl->EnumAudioEndpoints(pEnum, flow, DEVICE_STATE_ACTIVE, &pColl);
     if (FAILED(hr)) goto cleanup;
@@ -201,7 +204,7 @@ cleanup:
     if (pDev) pDev->lpVtbl->Release(pDev);
     if (pColl) pColl->lpVtbl->Release(pColl);
     if (pEnum) pEnum->lpVtbl->Release(pEnum);
-    CoUninitialize();
+    if (shouldUninit) CoUninitialize();
     return ok;
 }
 
@@ -212,9 +215,10 @@ static BOOL get_device_id_string(EDataFlow flow, int index, char* buf, int bufSi
     IMMDevice* pDev = NULL;
     BOOL ok = FALSE;
     LPWSTR pwszId = NULL;
+    BOOL shouldUninit = FALSE;
 
     buf[0] = '\0';
-    if (FAILED(get_enumerator(&pEnum))) return FALSE;
+    if (!get_enumerator(&pEnum, &shouldUninit)) return FALSE;
 
     HRESULT hr = pEnum->lpVtbl->EnumAudioEndpoints(pEnum, flow, DEVICE_STATE_ACTIVE, &pColl);
     if (FAILED(hr)) goto cleanup;
@@ -233,7 +237,7 @@ cleanup:
     if (pDev) pDev->lpVtbl->Release(pDev);
     if (pColl) pColl->lpVtbl->Release(pColl);
     if (pEnum) pEnum->lpVtbl->Release(pEnum);
-    CoUninitialize();
+    if (shouldUninit) CoUninitialize();
     return ok;
 }
 
@@ -286,8 +290,10 @@ const char* getInputDeviceId(int index) {
 // Internal: get IMMDevice for a specific index, or default if index == -1
 static HRESULT get_render_device(int deviceIndex, IMMDevice** ppDevice) {
     IMMDeviceEnumerator* pEnum = NULL;
-    HRESULT hr = get_enumerator(&pEnum);
-    if (FAILED(hr)) return hr;
+    BOOL shouldUninit = FALSE;
+    HRESULT hr = E_FAIL;
+
+    if (!get_enumerator(&pEnum, &shouldUninit)) return E_FAIL;
 
     if (deviceIndex < 0) {
         hr = pEnum->lpVtbl->GetDefaultAudioEndpoint(pEnum, eRender, eConsole, ppDevice);
@@ -300,7 +306,12 @@ static HRESULT get_render_device(int deviceIndex, IMMDevice** ppDevice) {
         }
     }
     pEnum->lpVtbl->Release(pEnum);
-    // Note: don't CoUninitialize here, caller's thread owns COM
+    
+    // Note: get_render_device is called from wasapi_playback_thread, which explicitly calls CoInitializeEx itself!
+    // So if get_enumerator internally calls CoInitializeEx again, it's just incrementing the ref count!
+    // We MUST balance it here with shouldUninit.
+    if (shouldUninit) CoUninitialize();
+    
     return hr;
 }
 
