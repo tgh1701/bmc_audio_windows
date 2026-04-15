@@ -32,3 +32,10 @@ if (ANDROID)
   # Support Android 15 16k page size
   target_link_options(bmc_audio_windows PRIVATE "-Wl,-z,max-page-size=16384")
 endif()
+
+# Copy the built DLL into the Flutter app's output directory.
+# This is required for ffiPlugin: true so the DLL is bundled with the app.
+install(TARGETS bmc_audio_windows
+  RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_PREFIX}"
+)
